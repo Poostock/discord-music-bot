@@ -142,8 +142,21 @@ class GuildQueue {
       this.lastPlayed = track;
       this.history.push(track.id);
       if (this.history.length > HISTORY_LIMIT) this.history.shift(); // ลบรายการเก่าสุด
-      this.fillAutoplay();
+      track.started = true; // เคยเล่นแล้ว (ถ้าปุ่ม Back ดันกลับเข้าคิว จะไม่ถูกทิ้งตอนรีเฟรช Autoplay)
+      this.refreshAutoplay();
     }
+  }
+
+  // Autoplay ต้องอิงเพลงที่กำลังเล่นเสมอ: ทุกครั้งที่เพลงเริ่ม ทิ้งเพลง Autoplay ที่ยังไม่เคยเล่น
+  // (หามาจากเพลงก่อนหน้า) แล้วหาใหม่จาก Mix ของเพลงนี้ — เพลงที่คนสั่งเองไม่ถูกทิ้ง
+  refreshAutoplay() {
+    if (this.autoplay) {
+      const before = this.tracks.length;
+      this.tracks = this.tracks.filter((t) => !(t.autoplay && !t.started));
+      const dropped = before - this.tracks.length;
+      if (dropped > 0) console.log(`[autoplay] refresh for "${this.current.title}": dropped ${dropped} old autoplay track(s)`);
+    }
+    this.fillAutoplay();
   }
 
   // ส่งข้อความลงช่องแชท: ถ้าพัง (สร้างการ์ด/ส่งไม่ได้) แค่ log ไม่กระทบเพลง
@@ -310,6 +323,7 @@ class GuildQueue {
     this.autoplayBusy = true;
     const round = this.autoplayRound;
     let added = 0;
+    let seedChanged = false;
     try {
       console.log(`[autoplay] seed: "${seed.title}" (${seed.id})`);
       let entries = [];
@@ -322,6 +336,13 @@ class GuildQueue {
       // ระหว่างรอ yt-dlp มี /stop, ปิด Autoplay หรือออกจากห้อง → ทิ้งผลลัพธ์
       if (round !== this.autoplayRound) {
         console.log('[autoplay] discarded result (stopped/disabled while fetching)');
+        return;
+      }
+
+      // ระหว่างรอ yt-dlp เพลงเปลี่ยนไปแล้ว → ผลนี้อิงเพลงเก่า ทิ้งแล้วหาใหม่จากเพลงปัจจุบัน (ทำใน finally)
+      if (seed !== (this.current ?? this.lastPlayed)) {
+        console.log(`[autoplay] seed changed while fetching ("${seed.title}" → "${(this.current ?? this.lastPlayed).title}"), refetching`);
+        seedChanged = true;
         return;
       }
 
@@ -351,6 +372,7 @@ class GuildQueue {
       console.error('[autoplay] unexpected error:', error);
     } finally {
       this.autoplayBusy = false;
+      if (seedChanged) this.fillAutoplay();
     }
 
     if (round !== this.autoplayRound) return;
