@@ -74,13 +74,15 @@ cd discord-music-bot
 npm install
 ```
 
-### ขั้นที่ 4: ดาวน์โหลด yt-dlp
+### ขั้นที่ 4: yt-dlp
 
-บอทใช้ [yt-dlp](https://github.com/yt-dlp/yt-dlp) ดึงเสียงจาก YouTube — สร้างโฟลเดอร์ `bin` แล้วโหลดไฟล์ตามระบบของคุณจาก [หน้า Releases](https://github.com/yt-dlp/yt-dlp/releases/latest):
+บอทใช้ [yt-dlp](https://github.com/yt-dlp/yt-dlp) ดึงเสียงจาก YouTube
+
+- **Windows: ไม่ต้องทำอะไร** — ตอนเปิดบอทครั้งแรก บอทจะดาวน์โหลด yt-dlp แบบโฟลเดอร์ (`yt-dlp_win.zip`) มาไว้ที่ `bin/yt-dlp/` ให้เอง (ตรวจ SHA-256 ก่อนติดตั้ง) และอัปเดตให้ทุกครั้งที่เปิดบอท
+- **Mac / Linux:** สร้างโฟลเดอร์ `bin` แล้วโหลดไฟล์จาก [หน้า Releases](https://github.com/yt-dlp/yt-dlp/releases/latest)
 
 | ระบบ | ไฟล์ที่โหลด | บันทึกเป็น |
 |---|---|---|
-| Windows | `yt-dlp.exe` | `bin/yt-dlp.exe` |
 | Mac | `yt-dlp_macos` | `bin/yt-dlp` (แล้วรัน `chmod +x bin/yt-dlp`) |
 | Linux | `yt-dlp_linux` | `bin/yt-dlp` (แล้วรัน `chmod +x bin/yt-dlp`) |
 
@@ -149,7 +151,7 @@ pm2 save
 |---|---|
 | `ไม่พบ DISCORD_TOKEN ในไฟล์ .env` | ยังไม่ได้สร้าง `.env` หรือยังไม่ได้กด Save |
 | `ไม่พบ FFmpeg ใน PATH` | ติดตั้ง FFmpeg แล้ว**ปิด/เปิด Terminal และ VS Code ใหม่ทั้งหมด** |
-| `เรียก yt-dlp ไม่ได้` | ยังไม่ได้ดาวน์โหลด yt-dlp ไว้ที่ `bin/` (ขั้นที่ 4) |
+| `เรียก yt-dlp ไม่ได้` | Windows: ตอนเปิดครั้งแรกต้องต่อเน็ตเพื่อให้บอทดาวน์โหลด yt-dlp / Mac, Linux: ยังไม่ได้โหลดไว้ที่ `bin/` (ขั้นที่ 4) |
 | พิมพ์ `/` แล้วไม่เห็นคำสั่งของบอท | ยังไม่ได้ `npm run deploy` หรือ `GUILD_ID` ผิด Server → กด `Ctrl + R` ใน Discord |
 | `ไม่พบคำสั่ง /xxx` ใน Terminal | เพิ่มคำสั่งใหม่แล้วยังไม่ได้ restart บอท |
 | `HTTP Error 403: Forbidden` นาน ๆ ครั้ง | YouTube ปฏิเสธชั่วคราว — บอทลองใหม่ให้อัตโนมัติ |

@@ -12,8 +12,13 @@ module.exports = {
   token,
   clientId: process.env.CLIENT_ID,
   guildId: process.env.GUILD_ID,
-  // ตำแหน่งไฟล์ yt-dlp (ค่าเริ่มต้น: bin/ ในโปรเจกต์) เปลี่ยนได้ด้วย YTDLP_PATH ใน .env
+  // ตำแหน่งไฟล์ yt-dlp เปลี่ยนได้ด้วย YTDLP_PATH ใน .env
+  // ค่าเริ่มต้น: Windows = bin/yt-dlp/yt-dlp.exe (แบบโฟลเดอร์ บอทติดตั้ง/อัปเดตให้เอง) / Mac, Linux = bin/yt-dlp
   ytdlpPath:
     process.env.YTDLP_PATH ||
-    path.join(__dirname, '..', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'),
+    (process.platform === 'win32'
+      ? path.join(__dirname, '..', 'bin', 'yt-dlp', 'yt-dlp.exe')
+      : path.join(__dirname, '..', 'bin', 'yt-dlp')),
+  // true = บอทดูแล yt-dlp แบบโฟลเดอร์บน Windows เอง (ไม่ได้ตั้ง YTDLP_PATH)
+  ytdlpManaged: process.platform === 'win32' && !process.env.YTDLP_PATH,
 };
