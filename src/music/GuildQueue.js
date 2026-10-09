@@ -22,6 +22,7 @@ const AUTOPLAY_MAX_CANDIDATES = 10; // ตรวจ candidate สูงสุด
 const HISTORY_LIMIT = 50; // จำ Video ID ของเพลงที่เล่นล่าสุดกี่เพลง
 const RADIO_MIN_PLAY_MS = 10_000; // สถานีเล่นได้ไม่ถึงเท่านี้ = ถือว่าล้มเหลว
 const RADIO_MAX_FAILURES = 3; // ล้มเหลวติดกันเท่านี้ → ปิดวิทยุ (กันวนไม่รู้จบ)
+const MIX_RESEED_EVERY = 5; // Mix Station: เล่นครบเท่านี้เพลง → กลับไปเริ่มจากเพลงตั้งต้นตัวใหม่ (กันหลุดแนว)
 
 // ข้อมูลการเล่นเพลงของ 1 Server
 // (อนาคต: loop, shuffle จะเพิ่มที่คลาสนี้)
@@ -54,6 +55,8 @@ class GuildQueue {
     // โหมดวิทยุ (/lofi): สถานีที่เปิดอยู่ (null = ปิด) — คิวว่างเมื่อไหร่ จะกลับมาเล่นสถานีนี้
     this.radio = null;
     this.radioFailures = 0; // จำนวนครั้งติดกันที่สถานีเล่นได้ไม่ถึง RADIO_MIN_PLAY_MS
+    this.mixSinceSeed = 0; // Mix Station: เล่นไปกี่เพลงแล้วนับจากเพลงตั้งต้นล่าสุด
+    this.lastSeedQuery = null; // Mix Station: เพลงตั้งต้นล่าสุด (สุ่มรอบหน้าไม่ให้ซ้ำ)
 
     // ต่อ player เข้ากับห้องเสียง
     connection.subscribe(this.player);
@@ -123,8 +126,8 @@ class GuildQueue {
   playNext() {
     const next = this.tracks.shift();
     if (!next) {
-      if (this.radio) this.playStation();
-      else if (this.autoplay) this.fillAutoplay();
+      if (this.radio && this.radio.type !== 'mix') this.playStation();
+      else if (this.autoplayActive) this.fillAutoplay(); // Autoplay หรือ Mix Station
       else this.startIdleTimer();
       return;
     }
@@ -170,6 +173,7 @@ class GuildQueue {
       track.started = true; // เคยเล่นแล้ว (ถ้าปุ่ม Back ดันกลับเข้าคิว จะไม่ถูกทิ้งตอนรีเฟรช Autoplay)
       // นับเฉพาะเพลงที่คนสั่งเอง (ถ้านับเพลง Autoplay ด้วย มันจะยิ่งเลือกเพลงเดิมวนไปเอง)
       if (!track.autoplay) stats.recordPlay(this.guildId, track);
+      if (track.mix) this.mixSinceSeed = track.seed ? 1 : this.mixSinceSeed + 1;
       this.refreshAutoplay();
     }
   }
@@ -177,7 +181,7 @@ class GuildQueue {
   // Autoplay ต้องอิงเพลงที่กำลังเล่นเสมอ: ทุกครั้งที่เพลงเริ่ม ทิ้งเพลง Autoplay ที่ยังไม่เคยเล่น
   // (หามาจากเพลงก่อนหน้า) แล้วหาใหม่จาก Mix ของเพลงนี้ — เพลงที่คนสั่งเองไม่ถูกทิ้ง
   refreshAutoplay() {
-    if (this.autoplay) {
+    if (this.autoplayActive) {
       const before = this.tracks.length;
       this.tracks = this.tracks.filter((t) => !(t.autoplay && !t.started));
       const dropped = before - this.tracks.length;
@@ -319,17 +323,44 @@ class GuildQueue {
     const station = stations.get(key);
     if (!station) throw new UserError('ไม่พบสถานีนี้');
 
-    const track = { ...(await youtube.resolveLive(station)), requestedBy: by?.id ?? null };
+    // สถานีไลฟ์ → หาไลฟ์ / Mix Station → สุ่มเพลงตั้งต้น
+    const track =
+      station.type === 'mix'
+        ? await this.resolveMixSeed(station)
+        : { ...(await youtube.resolveLive(station)), requestedBy: by?.id ?? null };
     console.log(`[radio] ${station.label} → "${track.title}" (${track.id}) by ${by?.name ?? '-'}`);
 
-    const switching = this.current?.live;
+    const switching = this.current?.live || this.current?.mix;
     this.radio = station;
     this.radioFailures = 0;
+    this.mixSinceSeed = 0;
     this.autoplayRound++; // ทิ้งผลของ Autoplay ที่อาจกำลังหาอยู่
     this.tracks = [track];
     if (this.current) this.stopCurrent({ reason: switching ? 'switched' : 'stopped', by: by?.name }); // → Idle → playNext()
     else this.playNext();
     return station;
+  }
+
+  // Autoplay ทำงานไหม: เปิด Mix Station อยู่ = ทำงานเสมอ / เปิดสถานีไลฟ์อยู่ = พักไว้ / ไม่ได้เปิดวิทยุ = ตามปุ่ม AutoPlay
+  get autoplayActive() {
+    return this.radio ? this.radio.type === 'mix' : this.autoplay;
+  }
+
+  // Mix Station: สุ่มเพลงตั้งต้นของสถานี (ไม่ซ้ำกับครั้งก่อน และไม่ใช่เพลงที่เพิ่งเล่น)
+  async resolveMixSeed(station) {
+    const choices = station.seeds.filter((q) => q !== this.lastSeedQuery);
+    choices.sort(() => Math.random() - 0.5);
+    for (const query of choices) {
+      try {
+        const track = await youtube.resolve(query);
+        if (this.history.includes(track.id)) continue;
+        this.lastSeedQuery = query;
+        return { ...track, requestedBy: null, autoplay: true, mix: true, seed: true, station: station.key };
+      } catch (error) {
+        console.warn(`[mix] ${station.label}: เพลงตั้งต้น "${query}" ใช้ไม่ได้ (${error.message})`);
+      }
+    }
+    throw new UserError(`หาเพลงตั้งต้นของ ${station.label} ไม่ได้ ลองใหม่อีกครั้ง`);
   }
 
   // คิวว่างระหว่างเปิดวิทยุ (เช่น เพลงที่แทรกเล่นจบ หรือไลฟ์ถูกตัด) → หาไลฟ์ของสถานีแล้วเล่นต่อ
@@ -375,7 +406,7 @@ class GuildQueue {
   // Autoplay: หาเพลงจาก YouTube Mix ของเพลงล่าสุด แล้วเติมท้ายคิวให้มีเพลงรอเล่น AUTOPLAY_PREFETCH เพลง
   // ทำงานเบื้องหลัง: Error ทุกอย่างถูกจับไว้ในนี้ ไม่ทำให้ Player หรือบอทพัง
   async fillAutoplay() {
-    if (!this.autoplay || this.radio || this.autoplayBusy) return; // เปิดวิทยุอยู่ → Autoplay พักไว้ก่อน
+    if (!this.autoplayActive || this.autoplayBusy) return; // เปิดสถานีไลฟ์อยู่ → Autoplay พักไว้ก่อน
     if (this.tracks.length >= AUTOPLAY_PREFETCH) return; // คิวมีเพลงพอแล้ว
 
     const seed = this.current ?? this.lastPlayed; // เพลงที่กำลังเล่น หรือเพิ่งเล่น
@@ -387,54 +418,71 @@ class GuildQueue {
 
     this.autoplayBusy = true;
     const round = this.autoplayRound;
+    const mix = this.radio?.type === 'mix' ? this.radio : null; // เพลงที่ได้จะติดป้ายของ Mix Station
+    const mixFields = mix ? { mix: true, station: mix.key } : {};
     let added = 0;
     let seedChanged = false;
     try {
-      console.log(`[autoplay] seed: "${seed.title}" (${seed.id})`);
-      let entries = [];
-      try {
-        entries = await youtube.getMix(seed.id, AUTOPLAY_MIX_SIZE);
-      } catch (error) {
-        console.warn(`[autoplay] mix fetch failed (seed ${seed.id}): ${error.message}`);
+      // Mix Station เล่นครบ MIX_RESEED_EVERY เพลง → ข้ามการหาจาก Mix ไปใช้เพลงตั้งต้นตัวใหม่ (ทำท้ายบล็อก)
+      const reseed = mix && this.mixSinceSeed >= MIX_RESEED_EVERY && !this.tracks.some((t) => t.seed);
+
+      if (!reseed) {
+        console.log(`[autoplay] seed: "${seed.title}" (${seed.id})`);
+        let entries = [];
+        try {
+          entries = await youtube.getMix(seed.id, AUTOPLAY_MIX_SIZE);
+        } catch (error) {
+          console.warn(`[autoplay] mix fetch failed (seed ${seed.id}): ${error.message}`);
+        }
+
+        // ระหว่างรอ yt-dlp มี /stop, ปิด Autoplay หรือออกจากห้อง → ทิ้งผลลัพธ์
+        if (round !== this.autoplayRound) {
+          console.log('[autoplay] discarded result (stopped/disabled while fetching)');
+          return;
+        }
+
+        // ระหว่างรอ yt-dlp เพลงเปลี่ยนไปแล้ว → ผลนี้อิงเพลงเก่า ทิ้งแล้วหาใหม่จากเพลงปัจจุบัน (ทำใน finally)
+        if (seed !== (this.current ?? this.lastPlayed)) {
+          console.log(`[autoplay] seed changed while fetching ("${seed.title}" → "${(this.current ?? this.lastPlayed).title}"), refetching`);
+          seedChanged = true;
+          return;
+        }
+
+        const queuedIds = new Set(this.tracks.map((t) => t.id));
+        if (this.current) queuedIds.add(this.current.id);
+        const { picked, rejected } = selectCandidates(entries, {
+          seedId: seed.id,
+          recentIds: new Set(this.history),
+          queuedIds,
+          want: AUTOPLAY_PREFETCH - this.tracks.length,
+          maxCandidates: AUTOPLAY_MAX_CANDIDATES,
+          preferences: stats.preferences(this.guildId), // เพลง/ช่องที่ Server นี้เปิดบ่อยได้คะแนนเพิ่ม
+        });
+
+        for (const { entry, reason, index } of rejected) {
+          console.log(`[autoplay] reject ${entry?.id} "${entry?.title}": ${reason} (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES})`);
+        }
+        for (const { entry, index, score, favorite } of picked) {
+          const fav = favorite > 0 ? `, favorite ${favorite.toFixed(1)}` : '';
+          console.log(`[autoplay] pick ${entry.id} "${entry.title}" (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES}, score ${score.toFixed(1)}${fav})`);
+          // เติมท้ายคิวเสมอ → ไม่มีทางแทรกก่อนเพลงของ User
+          this.tracks.push({ ...youtube.toTrack(entry), requestedBy: null, autoplay: true, ...mixFields });
+          added++;
+        }
+
+        if (added > 0) console.log(`[autoplay] added ${added} track(s), queue now ${this.tracks.length}`);
+        else if (entries.length > 0) console.warn(`[autoplay] no suitable track (seed ${seed.id})`);
       }
 
-      // ระหว่างรอ yt-dlp มี /stop, ปิด Autoplay หรือออกจากห้อง → ทิ้งผลลัพธ์
-      if (round !== this.autoplayRound) {
-        console.log('[autoplay] discarded result (stopped/disabled while fetching)');
-        return;
-      }
-
-      // ระหว่างรอ yt-dlp เพลงเปลี่ยนไปแล้ว → ผลนี้อิงเพลงเก่า ทิ้งแล้วหาใหม่จากเพลงปัจจุบัน (ทำใน finally)
-      if (seed !== (this.current ?? this.lastPlayed)) {
-        console.log(`[autoplay] seed changed while fetching ("${seed.title}" → "${(this.current ?? this.lastPlayed).title}"), refetching`);
-        seedChanged = true;
-        return;
-      }
-
-      const queuedIds = new Set(this.tracks.map((t) => t.id));
-      if (this.current) queuedIds.add(this.current.id);
-      const { picked, rejected } = selectCandidates(entries, {
-        seedId: seed.id,
-        recentIds: new Set(this.history),
-        queuedIds,
-        want: AUTOPLAY_PREFETCH - this.tracks.length,
-        maxCandidates: AUTOPLAY_MAX_CANDIDATES,
-        preferences: stats.preferences(this.guildId), // เพลง/ช่องที่ Server นี้เปิดบ่อยได้คะแนนเพิ่ม
-      });
-
-      for (const { entry, reason, index } of rejected) {
-        console.log(`[autoplay] reject ${entry?.id} "${entry?.title}": ${reason} (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES})`);
-      }
-      for (const { entry, index, score, favorite } of picked) {
-        const fav = favorite > 0 ? `, favorite ${favorite.toFixed(1)}` : '';
-        console.log(`[autoplay] pick ${entry.id} "${entry.title}" (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES}, score ${score.toFixed(1)}${fav})`);
-        // เติมท้ายคิวเสมอ → ไม่มีทางแทรกก่อนเพลงของ User
-        this.tracks.push({ ...youtube.toTrack(entry), requestedBy: null, autoplay: true });
+      // Mix Station: ครบ MIX_RESEED_EVERY เพลง หรือหาเพลงจาก Mix ไม่ได้ → เพลงถัดไปเป็นเพลงตั้งต้นตัวใหม่
+      if (mix && (reseed || added === 0)) {
+        const seedSong = await this.resolveMixSeed(mix);
+        if (round !== this.autoplayRound) return;
+        this.tracks.push(seedSong);
         added++;
+        const why = reseed ? `${MIX_RESEED_EVERY} songs played` : 'no song from Mix';
+        console.log(`[mix] ${mix.label}: ${why} → next is seed "${seedSong.title}"`);
       }
-
-      if (added > 0) console.log(`[autoplay] added ${added} track(s), queue now ${this.tracks.length}`);
-      else if (entries.length > 0) console.warn(`[autoplay] no suitable track (seed ${seed.id})`);
     } catch (error) {
       console.error('[autoplay] unexpected error:', error);
     } finally {
@@ -449,8 +497,10 @@ class GuildQueue {
       if (this.tracks.length > 0) {
         this.playNext();
       } else {
-        // หาเพลงไม่ได้ → แจ้ง แล้วกลับไปใช้ระบบ "คิวหมด 3 นาทีแล้วออก"
-        this.notify(panel.notice("🎵 Autoplay couldn't find another song — use /play to keep listening"));
+        // หาเพลงไม่ได้ → แจ้ง (Mix Station = ปิดสถานีด้วย) แล้วกลับไปใช้ระบบ "คิวหมด 3 นาทีแล้วออก"
+        const who = mix ? `📻 ${mix.label}` : '🎵 Autoplay';
+        if (mix) this.radio = null;
+        this.notify(panel.notice(`${who} couldn't find another song — use /play or /lofi to keep listening`));
         this.startIdleTimer();
       }
     }

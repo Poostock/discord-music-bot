@@ -34,6 +34,7 @@ function button(id, label, icon, active = false) {
 // สร้างข้อความ Music Panel ของเพลงที่กำลังเล่น ตามสถานะปัจจุบันของคิว (กำลังเปิดวิทยุ → Radio Panel)
 function build(queue) {
   if (queue.current?.live) return buildRadio(queue);
+  if (queue.current?.mix && queue.radio?.type === 'mix') return buildMix(queue);
   const track = queue.current ?? queue.lastPlayed;
   const iconURL = icons.url('note') ?? queue.textChannel?.client?.user?.displayAvatarURL();
 
@@ -93,7 +94,7 @@ const ENDED = {
 // (หัวข้อการ์ดแสดง @mention ไม่ได้ จึงใช้ชื่อที่แสดงแทน)
 function compact(track, { reason = 'finished', by } = {}) {
   const heading = `${ENDED[reason] ?? ENDED.finished}${by ? ` by ${by}` : ''}`;
-  const station = track.live ? stations.get(track.station) : null;
+  const station = track.live || track.mix ? stations.get(track.station) : null;
   const who = station
     ? `📻 ${station.label} Radio`
     : track.autoplay ? 'Autoplay' : `Requested by <@${track.requestedBy}>`;
@@ -170,6 +171,29 @@ function buildRadio(queue) {
 
   const buttons = new ActionRowBuilder().addComponents(
     queue.muted ? button('mute', 'Unmute', 'mute', true) : button('mute', 'Mute', 'unmute'),
+    button('stop', 'Stop', 'stop'),
+  );
+  return { content: '', embeds: [embed], components: [stationMenu('station', station.key), buttons] };
+}
+
+// Mix Station Panel: เพลงต้นฉบับทีละเพลง → แสดงเหมือน Music Panel + ชื่อสถานี + เมนูเปลี่ยนสถานี + Mute / Skip / Stop
+function buildMix(queue) {
+  const track = queue.current;
+  const station = stations.get(track.station);
+  const embed = new EmbedBuilder()
+    .setColor(COLOR)
+    .setAuthor({ name: `${station.label.toUpperCase()} · Mix Station`, iconURL: icons.url('note') })
+    .setDescription(`${icons.text('disc')} **[${escapeMarkdown(track.title.replace(/[[\]]/g, ''))}](${track.url})**`)
+    .setThumbnail(track.thumbnail)
+    .addFields(
+      { name: `${icons.text('user')} Station`, value: `${station.emoji} ${station.label}`, inline: true },
+      { name: `${icons.text('clock')} Music Duration`, value: `\`${formatDurationLong(track.duration)}\``, inline: true },
+      { name: `${icons.text('mic')} Music Author`, value: `\`${track.author ?? '-'}\``, inline: true },
+    );
+
+  const buttons = new ActionRowBuilder().addComponents(
+    queue.muted ? button('mute', 'Unmute', 'mute', true) : button('mute', 'Mute', 'unmute'),
+    button('skip', 'Skip', 'skip'),
     button('stop', 'Stop', 'stop'),
   );
   return { content: '', embeds: [embed], components: [stationMenu('station', station.key), buttons] };

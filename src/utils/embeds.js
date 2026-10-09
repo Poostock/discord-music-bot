@@ -1,5 +1,6 @@
 const { EmbedBuilder, escapeMarkdown } = require('discord.js');
 const formatDuration = require('./formatDuration');
+const stations = require('../music/stations');
 
 const COLOR = 0xa78bfa; // ม่วงลาเวนเดอร์ (ธีมเดียวกับ Music Panel)
 const BAR_LENGTH = 15;
@@ -12,8 +13,9 @@ function progressBar(elapsedSec, totalSec) {
   return '▬'.repeat(pos) + '🔘' + '▬'.repeat(BAR_LENGTH - 1 - pos);
 }
 
-// ใครเป็นคนขอเพลงนี้: เพลงที่ระบบเลือกเองแสดง "🎵 Autoplay" (ไม่ให้เข้าใจผิดว่ามีคนสั่ง)
+// ใครเป็นคนขอเพลงนี้: เพลงที่ระบบเลือกเองแสดง "🎵 Autoplay" หรือชื่อ Mix Station (ไม่ให้เข้าใจผิดว่ามีคนสั่ง)
 function requester(track) {
+  if (track.mix) return `📻 ${stations.get(track.station)?.label ?? 'Mix Station'}`;
   return track.autoplay ? '🎵 Autoplay' : `<@${track.requestedBy}>`; // mention ใน embed ไม่ส่งแจ้งเตือน
 }
 
