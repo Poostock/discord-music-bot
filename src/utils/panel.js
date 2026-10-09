@@ -1,6 +1,14 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, escapeMarkdown } = require('discord.js');
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
+  escapeMarkdown,
+} = require('discord.js');
 const { requester } = require('./embeds');
 const icons = require('./icons');
+const stations = require('../music/stations');
 
 const COLOR = 0xa78bfa; // ม่วงลาเวนเดอร์ (ธีมเดียวกับไอคอน)
 const PREFIX = 'music:'; // customId ของปุ่มทุกปุ่มขึ้นต้นด้วยคำนี้ (interactionCreate ใช้แยกปุ่มของเรา)
@@ -23,8 +31,9 @@ function button(id, label, icon, active = false) {
     .setStyle(active ? ButtonStyle.Primary : ButtonStyle.Secondary);
 }
 
-// สร้างข้อความ Music Panel ของเพลงที่กำลังเล่น ตามสถานะปัจจุบันของคิว
+// สร้างข้อความ Music Panel ของเพลงที่กำลังเล่น ตามสถานะปัจจุบันของคิว (กำลังเปิดวิทยุ → Radio Panel)
 function build(queue) {
+  if (queue.current?.live) return buildRadio(queue);
   const track = queue.current ?? queue.lastPlayed;
   const iconURL = icons.url('note') ?? queue.textChannel?.client?.user?.displayAvatarURL();
 
@@ -75,6 +84,8 @@ const ENDED = {
   stopped: 'Stopped',
   failed: "Couldn't play",
   left: 'Left the channel',
+  switched: 'Switched station', // วิทยุ: เปลี่ยนสถานี
+  interrupted: 'Radio paused for a song — it will come back after the queue', // วิทยุ: มีคน /play แทรก
 };
 
 // Panel ของเพลงที่จบแล้ว → การ์ดเล็ก ไม่มีปุ่ม
@@ -82,7 +93,10 @@ const ENDED = {
 // (หัวข้อการ์ดแสดง @mention ไม่ได้ จึงใช้ชื่อที่แสดงแทน)
 function compact(track, { reason = 'finished', by } = {}) {
   const heading = `${ENDED[reason] ?? ENDED.finished}${by ? ` by ${by}` : ''}`;
-  const who = track.autoplay ? 'Autoplay' : `Requested by <@${track.requestedBy}>`;
+  const station = track.live ? stations.get(track.station) : null;
+  const who = station
+    ? `📻 ${station.label} Radio`
+    : track.autoplay ? 'Autoplay' : `Requested by <@${track.requestedBy}>`;
   return { content: '', embeds: [smallCard(heading, `${badge(track.title, track.url)} · ${who}`, GRAY)], components: [] };
 }
 
@@ -108,4 +122,57 @@ function notice(text) {
   return { embeds: [new EmbedBuilder().setColor(GRAY).setDescription(text)] };
 }
 
-module.exports = { build, compact, compactFromMessage, queued, notice, PREFIX };
+// ── วิทยุ (/lofi) ──
+
+// เมนูเลือกสถานี — current = key ของสถานีที่กำลังเล่น (ให้ขึ้นเป็นค่าที่เลือกไว้)
+function stationMenu(customId, current) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(PREFIX + customId)
+      .setPlaceholder('🎵 Choose a station...')
+      .addOptions(
+        stations.STATIONS.map((s) => ({
+          label: s.label,
+          value: s.key,
+          description: s.description,
+          emoji: s.emoji,
+          default: s.key === current,
+        })),
+      ),
+  );
+}
+
+// แผงเลือกสถานีของ /lofi (ทุกคนเห็นและกดเลือกได้)
+function picker() {
+  const embed = new EmbedBuilder()
+    .setColor(COLOR)
+    .setAuthor({ name: 'LOFI RADIO', iconURL: icons.url('note') })
+    .setDescription('Pick a station — I will join your voice channel and keep it playing.');
+  return { embeds: [embed], components: [stationMenu('pick', null)] };
+}
+
+// หลังเลือกสถานีจากแผง /lofi → แผงย่อเป็นการ์ดเล็ก (Radio Panel ตัวจริงจะส่งเป็นข้อความใหม่)
+function radioStarted(station, by) {
+  return { content: '', embeds: [smallCard(`Lofi Radio started by ${by}`, `${station.emoji} **${station.label}** — ${station.description}`, COLOR)], components: [] };
+}
+
+// Radio Panel: สถานีที่กำลังเล่น + เมนูเปลี่ยนสถานี + Mute / Stop
+// (ไม่มี Back/Skip/Pause: ไลฟ์ข้ามเพลงไม่ได้ และหยุดแล้วเล่นต่อเสียงจะช้ากว่าไลฟ์จริง)
+function buildRadio(queue) {
+  const track = queue.current;
+  const station = stations.get(track.station);
+  const embed = new EmbedBuilder()
+    .setColor(COLOR)
+    .setAuthor({ name: 'RADIO · 🔴 LIVE', iconURL: icons.url('note') })
+    .setDescription(`${station.emoji} **${station.label}**\n${badge(track.title, track.url)}`)
+    .setThumbnail(track.thumbnail)
+    .addFields({ name: `${icons.text('mic')} Channel`, value: `\`${track.author ?? '-'}\``, inline: true });
+
+  const buttons = new ActionRowBuilder().addComponents(
+    queue.muted ? button('mute', 'Unmute', 'mute', true) : button('mute', 'Mute', 'unmute'),
+    button('stop', 'Stop', 'stop'),
+  );
+  return { content: '', embeds: [embed], components: [stationMenu('station', station.key), buttons] };
+}
+
+module.exports = { build, compact, compactFromMessage, queued, notice, picker, radioStarted, PREFIX };

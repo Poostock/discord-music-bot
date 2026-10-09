@@ -105,6 +105,38 @@ function toTrack(video) {
   };
 }
 
+// หาไลฟ์ที่กำลังออนแอร์ของสถานีวิทยุ (/lofi): ลองลิงก์หลักก่อน → ไม่ได้ไลฟ์อยู่ ค้นหาไลฟ์ด้วยคำค้นสำรอง
+// (sp=EgJAAQ%253D%253D = ตัวกรอง "Live" ในหน้าค้นหาของ YouTube)
+async function resolveLive(station) {
+  const asTrack = (video) => ({
+    ...toTrack(video),
+    title: video.title.replace(/ \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, ''), // yt-dlp ต่อวันเวลาท้ายชื่อไลฟ์ → ตัดออก
+    duration: null,
+    live: true,
+    station: station.key,
+  });
+
+  try {
+    const info = JSON.parse(await runYtDlp(['--dump-single-json', '--flat-playlist', '--no-playlist', '--', station.url]));
+    if (info.live_status === 'is_live') return asTrack(info);
+    console.warn(`[radio] ${station.label}: ลิงก์หลักไม่ได้ไลฟ์อยู่ (${info.live_status}) → ค้นหาไลฟ์แทน`);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw error;
+    console.warn(`[radio] ${station.label}: เปิดลิงก์หลักไม่ได้ → ค้นหาไลฟ์แทน (${error.message.split('\n')[0]})`);
+  }
+
+  try {
+    const search = `https://www.youtube.com/results?search_query=${encodeURIComponent(station.query)}&sp=EgJAAQ%253D%253D`;
+    const found = JSON.parse(await runYtDlp(['--dump-single-json', '--flat-playlist', '--playlist-end', '5', '--', search]));
+    const live = found.entries?.find((entry) => entry.live_status === 'is_live');
+    if (live) return asTrack(live);
+  } catch (error) {
+    console.warn(`[radio] ${station.label}: ค้นหาไลฟ์ไม่สำเร็จ (${error.message.split('\n')[0]})`);
+  }
+
+  throw new UserError(`ตอนนี้สถานี ${station.label} ไม่ได้ออกอากาศ ลองเลือกสถานีอื่น`);
+}
+
 // ดึง YouTube Mix ของเพลงต้นทาง (เพลย์ลิสต์ "RD<id>" ที่ YouTube สร้างจากอัลกอริทึมแนะนำ)
 // คืนรายการดิบจาก yt-dlp: { id, title, duration, live_status, availability, ... } (รายการแรกมักเป็นเพลงต้นทาง)
 // ใช้ runYtDlp เดิม → timeout 30 วินาที และรอจนโปรเซสปิดเสมอ ไม่มี yt-dlp ค้าง
@@ -155,4 +187,4 @@ function killProcess(child) {
   }
 }
 
-module.exports = { resolve, toTrack, getMix, createStream, killProcess };
+module.exports = { resolve, resolveLive, toTrack, getMix, createStream, killProcess };

@@ -8,6 +8,7 @@ const { escapeMarkdown } = require('discord.js');
 const youtube = require('./sources/youtube');
 const { selectCandidates } = require('./autoplay');
 const stats = require('./stats');
+const stations = require('./stations');
 const panel = require('../utils/panel');
 const UserError = require('../utils/UserError');
 
@@ -19,6 +20,8 @@ const AUTOPLAY_PREFETCH = 2; // Autoplay เติมคิวล่วงหน
 const AUTOPLAY_MIX_SIZE = 15; // ดึงรายการจาก Mix กี่รายการต่อครั้ง (รวมเพลงต้นทาง)
 const AUTOPLAY_MAX_CANDIDATES = 10; // ตรวจ candidate สูงสุดกี่รายการต่อรอบ
 const HISTORY_LIMIT = 50; // จำ Video ID ของเพลงที่เล่นล่าสุดกี่เพลง
+const RADIO_MIN_PLAY_MS = 10_000; // สถานีเล่นได้ไม่ถึงเท่านี้ = ถือว่าล้มเหลว
+const RADIO_MAX_FAILURES = 3; // ล้มเหลวติดกันเท่านี้ → ปิดวิทยุ (กันวนไม่รู้จบ)
 
 // ข้อมูลการเล่นเพลงของ 1 Server
 // (อนาคต: loop, shuffle จะเพิ่มที่คลาสนี้)
@@ -48,6 +51,10 @@ class GuildQueue {
     this.panelTrack = null; // เพลงของ Panel นั้น (ใช้ตอนย่อเป็นบรรทัดเดียว)
     this.lastEnded = null; // { track, ended } เพลงล่าสุดที่จบ + สาเหตุ
 
+    // โหมดวิทยุ (/lofi): สถานีที่เปิดอยู่ (null = ปิด) — คิวว่างเมื่อไหร่ จะกลับมาเล่นสถานีนี้
+    this.radio = null;
+    this.radioFailures = 0; // จำนวนครั้งติดกันที่สถานีเล่นได้ไม่ถึง RADIO_MIN_PLAY_MS
+
     // ต่อ player เข้ากับห้องเสียง
     connection.subscribe(this.player);
 
@@ -72,6 +79,15 @@ class GuildQueue {
       if (!this.closePanel(this.lastEnded.ended) && failed) {
         this.notify(panel.notice(`⚠️ Couldn't play **${escapeMarkdown(track.title)}** — skipping to the next song`));
       }
+
+      // สถานีวิทยุหลุดเร็วผิดปกติติดกันหลายครั้ง → ปิดวิทยุ ไม่งั้นจะต่อใหม่วนไม่รู้จบ
+      if (track.live && !stoppedManually && this.radio) {
+        this.radioFailures = resource.playbackDuration < RADIO_MIN_PLAY_MS ? this.radioFailures + 1 : 0;
+        if (this.radioFailures >= RADIO_MAX_FAILURES) {
+          this.notify(panel.notice(`📻 Lost connection to **${this.radio.label}** too many times — radio stopped`));
+          this.radio = null;
+        }
+      }
       this.playNext();
     });
 
@@ -87,6 +103,12 @@ class GuildQueue {
       this.startTrack(track);
       return 0;
     }
+    // กำลังเปิดวิทยุ → เพลงที่สั่งแทรกเล่นทันที (คิวหมดแล้ววิทยุจะกลับมาเอง)
+    if (this.current.live) {
+      this.tracks.unshift(track);
+      this.stopCurrent({ reason: 'interrupted' }); // → Idle → playNext() เล่นเพลงนี้
+      return 0;
+    }
     if (this.tracks.length >= MAX_QUEUE) {
       throw new UserError(`คิวเต็มแล้ว (สูงสุด ${MAX_QUEUE} เพลง)`);
     }
@@ -97,11 +119,12 @@ class GuildQueue {
   }
 
   // ดึงเพลงแรกในคิวมาเล่น
-  // คิวว่าง: Autoplay เปิด → หาเพลงมาเล่นต่อ / Autoplay ปิด → เริ่มนับเวลาออกจากห้อง
+  // คิวว่าง: เปิดวิทยุอยู่ → เล่นสถานีต่อ / Autoplay เปิด → หาเพลงมาเล่นต่อ / ไม่งั้น → เริ่มนับเวลาออกจากห้อง
   playNext() {
     const next = this.tracks.shift();
     if (!next) {
-      if (this.autoplay) this.fillAutoplay();
+      if (this.radio) this.playStation();
+      else if (this.autoplay) this.fillAutoplay();
       else this.startIdleTimer();
       return;
     }
@@ -133,7 +156,8 @@ class GuildQueue {
     this.current = track;
 
     // ครั้งแรกที่เริ่มเพลงนี้ (ไม่ใช่รอบลองใหม่): จำลง history และให้ Autoplay เติมคิวล่วงหน้า
-    if (attempt === 1) {
+    // (สถานีวิทยุไม่นับ: ไม่ใช่เพลง จึงไม่เข้า history / ปุ่ม Back / สถิติ / ต้นทางของ Autoplay)
+    if (attempt === 1 && !track.live) {
       // จำเพลงก่อนหน้าไว้ให้ปุ่ม Back (ยกเว้นตอนที่กำลังย้อนกลับเอง ไม่งั้นจะวนไปมา)
       if (this.lastPlayed && !this.goingBack) {
         this.backStack.push(this.lastPlayed);
@@ -221,6 +245,7 @@ class GuildQueue {
     const wasAutoplay = this.autoplay;
     if (wasAutoplay) console.log(`[autoplay] OFF by stop (guild ${this.guildId})`);
     this.autoplay = false;
+    this.radio = null; // ปิดวิทยุด้วย ไม่งั้นคิวว่างแล้วสถานีจะกลับมาเล่นเอง
     this.autoplayRound++;
     this.tracks = [];
     this.stopCurrent({ reason, by });
@@ -287,6 +312,43 @@ class GuildQueue {
     return true;
   }
 
+  // เปิดวิทยุสถานี key (จากเมนู /lofi หรือเมนูเปลี่ยนสถานีบน Radio Panel)
+  // หาไลฟ์ให้ได้ก่อน (ระหว่างนี้เพลง/สถานีเดิมยังเล่นต่อ) แล้วค่อยสลับ — เพลงในคิวเดิมถูกล้าง
+  // หาไลฟ์ไม่ได้ → throw UserError (สถานะเดิมไม่เปลี่ยน)
+  async startRadio(key, by) {
+    const station = stations.get(key);
+    if (!station) throw new UserError('ไม่พบสถานีนี้');
+
+    const track = { ...(await youtube.resolveLive(station)), requestedBy: by?.id ?? null };
+    console.log(`[radio] ${station.label} → "${track.title}" (${track.id}) by ${by?.name ?? '-'}`);
+
+    const switching = this.current?.live;
+    this.radio = station;
+    this.radioFailures = 0;
+    this.autoplayRound++; // ทิ้งผลของ Autoplay ที่อาจกำลังหาอยู่
+    this.tracks = [track];
+    if (this.current) this.stopCurrent({ reason: switching ? 'switched' : 'stopped', by: by?.name }); // → Idle → playNext()
+    else this.playNext();
+    return station;
+  }
+
+  // คิวว่างระหว่างเปิดวิทยุ (เช่น เพลงที่แทรกเล่นจบ หรือไลฟ์ถูกตัด) → หาไลฟ์ของสถานีแล้วเล่นต่อ
+  async playStation() {
+    const station = this.radio;
+    try {
+      const track = { ...(await youtube.resolveLive(station)), requestedBy: null };
+      if (this.radio !== station || this.current) return; // ระหว่างหา มีการเปลี่ยนสถานี/ปิดวิทยุ/เล่นเพลงอื่นไปแล้ว
+      this.tracks.unshift(track);
+      this.playNext();
+    } catch (error) {
+      if (this.radio !== station) return;
+      console.error(`[radio] ${station.label}: ต่อสถานีไม่ได้ —`, error.message);
+      this.radio = null;
+      this.notify(panel.notice(`📻 Couldn't reach **${station.label}** — radio stopped. Use /lofi to try again`));
+      if (!this.current) this.startIdleTimer();
+    }
+  }
+
   get guildId() {
     return this.connection.joinConfig?.guildId;
   }
@@ -313,7 +375,7 @@ class GuildQueue {
   // Autoplay: หาเพลงจาก YouTube Mix ของเพลงล่าสุด แล้วเติมท้ายคิวให้มีเพลงรอเล่น AUTOPLAY_PREFETCH เพลง
   // ทำงานเบื้องหลัง: Error ทุกอย่างถูกจับไว้ในนี้ ไม่ทำให้ Player หรือบอทพัง
   async fillAutoplay() {
-    if (!this.autoplay || this.autoplayBusy) return;
+    if (!this.autoplay || this.radio || this.autoplayBusy) return; // เปิดวิทยุอยู่ → Autoplay พักไว้ก่อน
     if (this.tracks.length >= AUTOPLAY_PREFETCH) return; // คิวมีเพลงพอแล้ว
 
     const seed = this.current ?? this.lastPlayed; // เพลงที่กำลังเล่น หรือเพิ่งเล่น

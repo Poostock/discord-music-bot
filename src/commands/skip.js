@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, MessageFlags, escapeMarkdown } = require('discord.js');
 const queueManager = require('../music/queueManager');
 const { requireSameChannel } = require('../music/voice');
+const UserError = require('../utils/UserError');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -10,6 +11,7 @@ module.exports = {
   async execute(interaction) {
     requireSameChannel(interaction);
     const queue = queueManager.get(interaction.guildId);
+    if (queue?.current?.live) throw new UserError('วิทยุข้ามเพลงไม่ได้ — เปลี่ยนสถานีด้วยเมนูบน Radio Panel หรือ /lofi');
     const skipped = queue?.skip(interaction.member.displayName);
     if (!skipped) {
       await interaction.reply({ content: 'ไม่มีเพลงที่กำลังเล่นอยู่', flags: MessageFlags.Ephemeral });

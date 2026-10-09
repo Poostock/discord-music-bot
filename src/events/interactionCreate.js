@@ -11,8 +11,8 @@ const cooldowns = new Map();
 async function replyPrivately(interaction, content) {
   const message = { content, flags: MessageFlags.Ephemeral };
   try {
-    // ปุ่มที่ deferUpdate แล้วต้องใช้ followUp (editReply จะเขียนทับการ์ด Panel)
-    if (interaction.deferred && !interaction.replied && !interaction.isButton()) {
+    // ปุ่ม/เมนูที่ deferUpdate แล้วต้องใช้ followUp (editReply จะเขียนทับการ์ด Panel)
+    if (interaction.deferred && !interaction.replied && !interaction.isMessageComponent()) {
       // defer แล้ว: ข้อความ "thinking..." ทุกคนเห็น → ลบทิ้ง แล้วส่ง Error แบบเห็นคนเดียวแทน
       await interaction.deleteReply();
       await interaction.followUp(message);
@@ -30,8 +30,9 @@ async function replyPrivately(interaction, content) {
 module.exports = {
   name: Events.InteractionCreate,
   async execute(interaction) {
-    // สนใจเฉพาะ Slash Command และปุ่มบน Music Panel
-    const isPanelButton = interaction.isButton() && interaction.customId.startsWith(PANEL_PREFIX);
+    // สนใจเฉพาะ Slash Command และปุ่ม/เมนูเลือกของบอท (Music Panel, Radio Panel, แผง /lofi)
+    const isPanelButton =
+      (interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith(PANEL_PREFIX);
     if (!interaction.isChatInputCommand() && !isPanelButton) return;
 
     // ด่าน 1: ใช้ได้เฉพาะใน Server (ไม่รับจาก DM)
