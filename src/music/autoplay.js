@@ -1,4 +1,4 @@
-// ตัวกรองเพลงสำหรับ Autoplay: รับรายการจาก YouTube Mix แล้วเลือกเพลงที่ผ่านเงื่อนไข
+// ตัวกรองเพลงสำหรับ Autoplay: รับรายการจาก YouTube Mix แล้วเลือกเพลงที่ผ่านเงื่อนไข (ให้เพลงที่ Server เปิดบ่อยมาก่อน)
 // เป็นฟังก์ชันล้วน ๆ (ไม่เรียก Discord / yt-dlp) จึงทดสอบแยกได้ง่าย
 
 const VIDEO_ID = /^[\w-]{11}$/;
@@ -20,18 +20,28 @@ function rejectReason(entry, { recentIds, queuedIds }) {
   return null;
 }
 
-// ไล่ตรวจตามลำดับใน Mix:
-// - ข้ามเพลงต้นทาง (ไม่นับเป็น candidate)
-// - ตรวจไม่เกิน maxCandidates รายการ, เลือกไม่เกิน want เพลง
-// คืน { picked: [{ entry, index }], rejected: [{ entry, reason, index }], checked }
-function selectCandidates(entries, { seedId, recentIds, queuedIds, want, maxCandidates = 10 }) {
-  const picked = [];
+// คะแนนของ candidate:
+// - ลำดับใน Mix: ยิ่งอยู่ต้นยิ่งเกี่ยวข้องกับเพลงที่กำลังเล่น (ลำดับ 1 = maxCandidates-1 แต้ม ... ลำดับสุดท้าย = 0)
+// - เพลงที่ Server นี้เคยเปิดเอง: โบนัสใหญ่ (เปิดแม้ 1 ครั้งก็ชนะลำดับใน Mix ได้ / log ทำให้เพลงที่เปิด 100 ครั้งไม่กลบหมด)
+// - ช่องที่เคยเปิดบ่อย: โบนัสเล็ก (ชื่อช่องอาจเป็นค่ายที่มีหลายศิลปิน)
+function scoreOf(entry, index, maxCandidates, preferences) {
+  const video = preferences?.video.get(entry.id) ?? 0;
+  const channel = preferences?.channel.get(entry.channel) ?? 0;
+  return (maxCandidates - index) + 10 * Math.log2(1 + video) + 2 * Math.log2(1 + channel);
+}
+
+// ตรวจ candidate ตามลำดับใน Mix (ข้ามเพลงต้นทาง ไม่นับ) สูงสุด maxCandidates รายการ
+// แล้วเลือกตัวที่ผ่านตัวกรองและคะแนนสูงสุด want เพลง
+// preferences = { video: Map, channel: Map } จาก stats.preferences() (ไม่ส่งมา = ใช้ลำดับใน Mix อย่างเดียว)
+// คืน { picked: [{ entry, index, score, favorite }], rejected: [{ entry, reason, index }], checked }
+function selectCandidates(entries, { seedId, recentIds, queuedIds, want, maxCandidates = 10, preferences }) {
+  const passed = [];
   const rejected = [];
   const taken = new Set(queuedIds); // กันเลือกเพลงซ้ำกันเองในรอบเดียว
   let checked = 0;
 
   for (const entry of entries) {
-    if (picked.length >= want || checked >= maxCandidates) break;
+    if (checked >= maxCandidates) break;
     if (entry?.id === seedId) continue;
 
     checked++;
@@ -39,12 +49,15 @@ function selectCandidates(entries, { seedId, recentIds, queuedIds, want, maxCand
     if (reason) {
       rejected.push({ entry, reason, index: checked });
     } else {
-      picked.push({ entry, index: checked });
+      const favorite = preferences?.video.get(entry.id) ?? 0;
+      passed.push({ entry, index: checked, favorite, score: scoreOf(entry, checked, maxCandidates, preferences) });
       taken.add(entry.id);
     }
   }
 
-  return { picked, rejected, checked };
+  // คะแนนเท่ากัน → ตัวที่อยู่ต้น Mix ก่อน
+  passed.sort((a, b) => b.score - a.score || a.index - b.index);
+  return { picked: passed.slice(0, want), rejected, checked };
 }
 
 module.exports = { selectCandidates };

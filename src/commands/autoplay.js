@@ -1,13 +1,28 @@
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags, PermissionFlagsBits } = require('discord.js');
 const queueManager = require('../music/queueManager');
+const stats = require('../music/stats');
 const { requireSameChannel } = require('../music/voice');
+const UserError = require('../utils/UserError');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('autoplay')
-    .setDescription('เปิด/ปิด Autoplay (เล่นเพลงที่เกี่ยวข้องต่ออัตโนมัติเมื่อคิวหมด)'),
+    .setDescription('เปิด/ปิด Autoplay (เล่นเพลงที่เกี่ยวข้องต่ออัตโนมัติเมื่อคิวหมด)')
+    .addBooleanOption((option) =>
+      option.setName('reset').setDescription('ล้างสถิติเพลงที่ Server นี้เปิดบ่อย (ต้องมีสิทธิ์ Manage Server)'),
+    ),
 
   async execute(interaction) {
+    // /autoplay reset:True → ล้างสถิติ (ไม่สลับเปิด/ปิด) — เป็นข้อมูลของทั้ง Server จึงให้เฉพาะคนที่จัดการ Server ได้
+    if (interaction.options.getBoolean('reset')) {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
+        throw new UserError('ล้างสถิติได้เฉพาะคนที่มีสิทธิ์ Manage Server');
+      }
+      const count = stats.reset(interaction.guildId);
+      await interaction.reply({ content: `🧹 ล้างสถิติแล้ว (${count} เพลง) — Autoplay จะเริ่มเรียนรู้ใหม่`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     requireSameChannel(interaction);
     const queue = queueManager.get(interaction.guildId);
     if (!queue) {

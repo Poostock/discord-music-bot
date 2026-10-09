@@ -7,6 +7,7 @@ const {
 const { escapeMarkdown } = require('discord.js');
 const youtube = require('./sources/youtube');
 const { selectCandidates } = require('./autoplay');
+const stats = require('./stats');
 const panel = require('../utils/panel');
 const UserError = require('../utils/UserError');
 
@@ -143,6 +144,8 @@ class GuildQueue {
       this.history.push(track.id);
       if (this.history.length > HISTORY_LIMIT) this.history.shift(); // ลบรายการเก่าสุด
       track.started = true; // เคยเล่นแล้ว (ถ้าปุ่ม Back ดันกลับเข้าคิว จะไม่ถูกทิ้งตอนรีเฟรช Autoplay)
+      // นับเฉพาะเพลงที่คนสั่งเอง (ถ้านับเพลง Autoplay ด้วย มันจะยิ่งเลือกเพลงเดิมวนไปเอง)
+      if (!track.autoplay) stats.recordPlay(this.guildId, track);
       this.refreshAutoplay();
     }
   }
@@ -354,13 +357,15 @@ class GuildQueue {
         queuedIds,
         want: AUTOPLAY_PREFETCH - this.tracks.length,
         maxCandidates: AUTOPLAY_MAX_CANDIDATES,
+        preferences: stats.preferences(this.guildId), // เพลง/ช่องที่ Server นี้เปิดบ่อยได้คะแนนเพิ่ม
       });
 
       for (const { entry, reason, index } of rejected) {
         console.log(`[autoplay] reject ${entry?.id} "${entry?.title}": ${reason} (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES})`);
       }
-      for (const { entry, index } of picked) {
-        console.log(`[autoplay] pick ${entry.id} "${entry.title}" (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES})`);
+      for (const { entry, index, score, favorite } of picked) {
+        const fav = favorite > 0 ? `, favorite ${favorite.toFixed(1)}` : '';
+        console.log(`[autoplay] pick ${entry.id} "${entry.title}" (candidate ${index}/${AUTOPLAY_MAX_CANDIDATES}, score ${score.toFixed(1)}${fav})`);
         // เติมท้ายคิวเสมอ → ไม่มีทางแทรกก่อนเพลงของ User
         this.tracks.push({ ...youtube.toTrack(entry), requestedBy: null, autoplay: true });
         added++;
